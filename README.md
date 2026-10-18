@@ -173,3 +173,7 @@ scheduler is an in-process interval.
 - All-day events are skipped — there is no start time to count down to.
 - Disconnecting revokes the Google token and deletes the user, their devices
   and their ledger rows from the server.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

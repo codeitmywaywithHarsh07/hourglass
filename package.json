@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Installable PWA that pushes a notification before every Google Calendar meeting — even when the app is closed.",
+  "license": "MIT",
   "engines": {
     "node": ">=22.5.0"
   },
