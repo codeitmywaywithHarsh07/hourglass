@@ -55,27 +55,43 @@ function pickConnection() {
   return url;
 }
 
-const CONNECTION = pickConnection();
-const isLocal = isLoopback(CONNECTION);
+/**
+ * The pool is built on first use, not at import.
+ *
+ * Throwing at module scope takes the whole serverless function down before the
+ * request handler exists, so the caller gets an opaque FUNCTION_INVOCATION_FAILED
+ * and the real reason is only visible in the platform logs. Deferring it means a
+ * misconfigured database surfaces as a normal error response that says what is
+ * wrong.
+ */
+let pool = null;
 
-// One connection per warm function instance. Hosted Postgres sits behind a
-// pooler, so a wide pool per instance would exhaust it as instances multiply.
-const pool = new Pool({
-  connectionString: CONNECTION,
-  max: 1,
-  idleTimeoutMillis: 10_000,
-  connectionTimeoutMillis: 10_000,
-  ssl: isLocal ? false : { rejectUnauthorized: false },
-});
+function getPool() {
+  if (pool) return pool;
 
-pool.on("error", (err) => console.error("[db] idle client error:", err.message));
+  const connection = pickConnection();
+
+  // One connection per warm function instance. Hosted Postgres sits behind a
+  // pooler, so a wide pool per instance would exhaust it as instances multiply.
+  pool = new Pool({
+    connectionString: connection,
+    max: 1,
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
+    ssl: isLoopback(connection) ? false : { rejectUnauthorized: false },
+  });
+
+  pool.on("error", (err) => console.error("[db] idle client error:", err.message));
+  return pool;
+}
 
 export function query(text, params) {
-  return pool.query(text, params);
+  return getPool().query(text, params);
 }
 
 export async function closePool() {
-  await pool.end();
+  if (pool) await pool.end();
+  pool = null;
 }
 
 /* ----------------------------------------------------------------- schema -- */
