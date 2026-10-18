@@ -81,7 +81,7 @@ export async function exchangeCode(code) {
   const profile = decodeIdToken(data.id_token);
   if (!profile?.sub) throw new Error("Google did not return an id_token");
 
-  const user = upsertUser({
+  const user = await upsertUser({
     sub: profile.sub,
     email: profile.email,
     name: profile.name,
@@ -110,7 +110,7 @@ export async function getAccessToken(user, { force = false } = {}) {
   }
 
   if (!user.refresh_token) {
-    markNeedsReauth(user.id);
+    await markNeedsReauth(user.id);
     throw new ReauthRequired("No refresh token stored");
   }
 
@@ -130,7 +130,7 @@ export async function getAccessToken(user, { force = false } = {}) {
     // invalid_grant = the user revoked access or the token expired for good.
     if (data.error === "invalid_grant") {
       accessTokenCache.delete(user.id);
-      markNeedsReauth(user.id);
+      await markNeedsReauth(user.id);
       throw new ReauthRequired(data.error_description || "invalid_grant");
     }
     throw new Error(`Token refresh failed: ${data.error_description || data.error}`);

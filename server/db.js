@@ -1,158 +1,207 @@
 /**
- * SQLite storage, built on Node's bundled `node:sqlite` so the project needs
- * no native database dependency.
+ * Postgres storage.
  *
- * The extension this app replaces kept everything in chrome.storage.local,
- * including a 50-item array of already-notified event ids. That array could
- * evict ids during a busy stretch and re-notify. Here the ledger is a real
- * table keyed by (user_id, event_id), so a meeting can only ever fire once.
+ * This was SQLite (node:sqlite) while the app ran as a long-lived process.
+ * On Vercel every request is a fresh, short-lived function with an ephemeral
+ * filesystem, so a file-backed database would lose refresh tokens and push
+ * subscriptions constantly. Everything here is therefore async.
+ *
+ * `pg` rather than @vercel/postgres so the same code works against Vercel
+ * Postgres, Neon, Supabase or a plain local Postgres.
  */
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import pg from "pg";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DB_PATH = process.env.DB_PATH || join(ROOT, "data", "app.db");
+const { Pool } = pg;
 
-mkdirSync(dirname(DB_PATH), { recursive: true });
+const CONNECTION =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_PRISMA_URL;
 
-export const db = new DatabaseSync(DB_PATH);
+if (!CONNECTION) {
+  throw new Error(
+    "No database connection string. Set DATABASE_URL (or POSTGRES_URL).",
+  );
+}
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
+const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(CONNECTION);
 
+// One connection per warm function instance. Hosted Postgres sits behind a
+// pooler, so a wide pool per instance would exhaust it as instances multiply.
+const pool = new Pool({
+  connectionString: CONNECTION,
+  max: 1,
+  idleTimeoutMillis: 10_000,
+  connectionTimeoutMillis: 10_000,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+});
+
+pool.on("error", (err) => console.error("[db] idle client error:", err.message));
+
+export function query(text, params) {
+  return pool.query(text, params);
+}
+
+export async function closePool() {
+  await pool.end();
+}
+
+/* ----------------------------------------------------------------- schema -- */
+
+export const SCHEMA = `
   CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            SERIAL PRIMARY KEY,
     google_sub    TEXT NOT NULL UNIQUE,
     email         TEXT NOT NULL,
     name          TEXT,
     picture       TEXT,
     refresh_token TEXT,
-    needs_reauth  INTEGER NOT NULL DEFAULT 0,
-    created_at    INTEGER NOT NULL
+    needs_reauth  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at    BIGINT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS settings (
     user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     lead_minutes  INTEGER NOT NULL DEFAULT 5,
-    enabled       INTEGER NOT NULL DEFAULT 1,
-    voice_enabled INTEGER NOT NULL DEFAULT 1
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    voice_enabled BOOLEAN NOT NULL DEFAULT TRUE
   );
 
   CREATE TABLE IF NOT EXISTS subscriptions (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         SERIAL PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     endpoint   TEXT NOT NULL UNIQUE,
     p256dh     TEXT NOT NULL,
     auth       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at BIGINT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS notified (
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     event_id    TEXT NOT NULL,
-    notified_at INTEGER NOT NULL,
+    notified_at BIGINT NOT NULL,
     PRIMARY KEY (user_id, event_id)
   );
 
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
   CREATE INDEX IF NOT EXISTS idx_notified_at ON notified(notified_at);
-`);
+`;
+
+export function migrate() {
+  return query(SCHEMA);
+}
+
+/**
+ * Applied lazily, once per instance. `npm run migrate` is the deliberate path;
+ * this just means a fresh deployment against an empty database still works
+ * instead of 500ing on the first request.
+ */
+let ready = null;
+function ensureSchema() {
+  if (!ready) {
+    ready = migrate().catch((err) => {
+      ready = null; // let the next request retry rather than wedging forever
+      throw err;
+    });
+  }
+  return ready;
+}
+
+async function sql(text, params) {
+  await ensureSchema();
+  return query(text, params);
+}
 
 const now = () => Date.now();
 
 /* ---------------------------------------------------------------- users -- */
 
-export function upsertUser({ sub, email, name, picture, refreshToken }) {
-  const existing = db
-    .prepare("SELECT * FROM users WHERE google_sub = ?")
-    .get(sub);
+export async function upsertUser({ sub, email, name, picture, refreshToken }) {
+  // Google only returns a refresh token on first consent (or when
+  // prompt=consent forces it), so COALESCE keeps a stored one.
+  const { rows } = await sql(
+    `INSERT INTO users (google_sub, email, name, picture, refresh_token, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (google_sub) DO UPDATE
+       SET email         = EXCLUDED.email,
+           name          = EXCLUDED.name,
+           picture       = EXCLUDED.picture,
+           refresh_token = COALESCE(EXCLUDED.refresh_token, users.refresh_token),
+           needs_reauth  = FALSE
+     RETURNING *`,
+    [sub, email, name ?? null, picture ?? null, refreshToken ?? null, now()],
+  );
 
-  if (existing) {
-    // Google only returns a refresh token on the first consent (or when
-    // prompt=consent is forced), so never clobber a stored one with null.
-    db.prepare(
-      `UPDATE users
-          SET email = ?, name = ?, picture = ?,
-              refresh_token = COALESCE(?, refresh_token),
-              needs_reauth = 0
-        WHERE id = ?`,
-    ).run(email, name ?? null, picture ?? null, refreshToken ?? null, existing.id);
-    return getUser(existing.id);
-  }
-
-  const info = db
-    .prepare(
-      `INSERT INTO users (google_sub, email, name, picture, refresh_token, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    )
-    .run(sub, email, name ?? null, picture ?? null, refreshToken ?? null, now());
-
-  const userId = Number(info.lastInsertRowid);
-  db.prepare(
-    "INSERT INTO settings (user_id, lead_minutes) VALUES (?, ?)",
-  ).run(userId, Number(process.env.DEFAULT_LEAD_MINUTES || 5));
-
-  return getUser(userId);
+  const user = rows[0];
+  await sql(
+    `INSERT INTO settings (user_id, lead_minutes)
+     VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING`,
+    [user.id, Number(process.env.DEFAULT_LEAD_MINUTES || 5)],
+  );
+  return user;
 }
 
-export function getUser(id) {
-  return db.prepare("SELECT * FROM users WHERE id = ?").get(id) ?? null;
+export async function getUser(id) {
+  const { rows } = await sql("SELECT * FROM users WHERE id = $1", [id]);
+  return rows[0] ?? null;
 }
 
-export function deleteUser(id) {
-  db.prepare("DELETE FROM users WHERE id = ?").run(id);
+export async function deleteUser(id) {
+  await sql("DELETE FROM users WHERE id = $1", [id]);
 }
 
-export function markNeedsReauth(id) {
-  db.prepare("UPDATE users SET needs_reauth = 1, refresh_token = NULL WHERE id = ?").run(id);
+export async function markNeedsReauth(id) {
+  await sql(
+    "UPDATE users SET needs_reauth = TRUE, refresh_token = NULL WHERE id = $1",
+    [id],
+  );
 }
 
 /** Users the scheduler should poll: enabled, still connected, with a device. */
-export function listActiveUsers() {
-  return db
-    .prepare(
-      `SELECT u.*, s.lead_minutes
-         FROM users u
-         JOIN settings s ON s.user_id = u.id
-        WHERE s.enabled = 1
-          AND u.needs_reauth = 0
-          AND u.refresh_token IS NOT NULL
-          AND EXISTS (SELECT 1 FROM subscriptions sub WHERE sub.user_id = u.id)`,
-    )
-    .all();
+export async function listActiveUsers() {
+  const { rows } = await sql(
+    `SELECT u.*, s.lead_minutes
+       FROM users u
+       JOIN settings s ON s.user_id = u.id
+      WHERE s.enabled
+        AND NOT u.needs_reauth
+        AND u.refresh_token IS NOT NULL
+        AND EXISTS (SELECT 1 FROM subscriptions sub WHERE sub.user_id = u.id)`,
+  );
+  return rows;
 }
 
 /* ------------------------------------------------------------- settings -- */
 
-export function getSettings(userId) {
-  let row = db.prepare("SELECT * FROM settings WHERE user_id = ?").get(userId);
-  if (!row) {
-    db.prepare("INSERT INTO settings (user_id, lead_minutes) VALUES (?, ?)").run(
-      userId,
-      Number(process.env.DEFAULT_LEAD_MINUTES || 5),
+export async function getSettings(userId) {
+  let { rows } = await sql("SELECT * FROM settings WHERE user_id = $1", [userId]);
+
+  if (!rows[0]) {
+    await sql(
+      "INSERT INTO settings (user_id, lead_minutes) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING",
+      [userId, Number(process.env.DEFAULT_LEAD_MINUTES || 5)],
     );
-    row = db.prepare("SELECT * FROM settings WHERE user_id = ?").get(userId);
+    ({ rows } = await sql("SELECT * FROM settings WHERE user_id = $1", [userId]));
   }
+
   return {
-    leadMinutes: row.lead_minutes,
-    enabled: !!row.enabled,
-    voiceEnabled: !!row.voice_enabled,
+    leadMinutes: rows[0].lead_minutes,
+    enabled: rows[0].enabled,
+    voiceEnabled: rows[0].voice_enabled,
   };
 }
 
-export function updateSettings(userId, { leadMinutes, enabled, voiceEnabled }) {
-  const current = getSettings(userId);
+export async function updateSettings(userId, { leadMinutes, enabled, voiceEnabled }) {
+  const current = await getSettings(userId);
   const next = {
     leadMinutes: clampLead(leadMinutes ?? current.leadMinutes),
     enabled: enabled ?? current.enabled,
     voiceEnabled: voiceEnabled ?? current.voiceEnabled,
   };
-  db.prepare(
-    "UPDATE settings SET lead_minutes = ?, enabled = ?, voice_enabled = ? WHERE user_id = ?",
-  ).run(next.leadMinutes, next.enabled ? 1 : 0, next.voiceEnabled ? 1 : 0, userId);
+  await sql(
+    "UPDATE settings SET lead_minutes = $1, enabled = $2, voice_enabled = $3 WHERE user_id = $4",
+    [next.leadMinutes, next.enabled, next.voiceEnabled, userId],
+  );
   return next;
 }
 
@@ -164,48 +213,52 @@ function clampLead(value) {
 
 /* -------------------------------------------------------- subscriptions -- */
 
-export function saveSubscription(userId, subscription) {
+export async function saveSubscription(userId, subscription) {
   const { endpoint, keys } = subscription;
   if (!endpoint || !keys?.p256dh || !keys?.auth) {
     throw new Error("Invalid push subscription");
   }
-  db.prepare(
+  await sql(
     `INSERT INTO subscriptions (user_id, endpoint, p256dh, auth, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(endpoint) DO UPDATE
-       SET user_id = excluded.user_id,
-           p256dh  = excluded.p256dh,
-           auth    = excluded.auth`,
-  ).run(userId, endpoint, keys.p256dh, keys.auth, now());
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (endpoint) DO UPDATE
+       SET user_id = EXCLUDED.user_id,
+           p256dh  = EXCLUDED.p256dh,
+           auth    = EXCLUDED.auth`,
+    [userId, endpoint, keys.p256dh, keys.auth, now()],
+  );
 }
 
-export function listSubscriptions(userId) {
-  return db.prepare("SELECT * FROM subscriptions WHERE user_id = ?").all(userId);
+export async function listSubscriptions(userId) {
+  const { rows } = await sql("SELECT * FROM subscriptions WHERE user_id = $1", [userId]);
+  return rows;
 }
 
-export function deleteSubscription(endpoint) {
-  db.prepare("DELETE FROM subscriptions WHERE endpoint = ?").run(endpoint);
+export async function deleteSubscription(endpoint) {
+  await sql("DELETE FROM subscriptions WHERE endpoint = $1", [endpoint]);
 }
 
-export function countSubscriptions(userId) {
-  return db
-    .prepare("SELECT COUNT(*) AS n FROM subscriptions WHERE user_id = ?")
-    .get(userId).n;
+export async function countSubscriptions(userId) {
+  const { rows } = await sql(
+    "SELECT COUNT(*)::int AS n FROM subscriptions WHERE user_id = $1",
+    [userId],
+  );
+  return rows[0].n;
 }
 
 /* ------------------------------------------------------- notified ledger -- */
 
-/** Returns true if this is the first time we've claimed this event. */
-export function claimNotification(userId, eventId) {
-  const info = db
-    .prepare(
-      `INSERT OR IGNORE INTO notified (user_id, event_id, notified_at)
-       VALUES (?, ?, ?)`,
-    )
-    .run(userId, eventId, now());
-  return info.changes > 0;
+/** True only the first time this event is claimed — the insert is the lock. */
+export async function claimNotification(userId, eventId) {
+  const res = await sql(
+    `INSERT INTO notified (user_id, event_id, notified_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, event_id) DO NOTHING`,
+    [userId, eventId, now()],
+  );
+  return res.rowCount > 0;
 }
 
-export function pruneNotified(maxAgeMs = 48 * 60 * 60 * 1000) {
-  db.prepare("DELETE FROM notified WHERE notified_at < ?").run(now() - maxAgeMs);
+export async function pruneNotified(maxAgeMs = 48 * 60 * 60 * 1000) {
+  await sql("DELETE FROM notified WHERE notified_at < $1", [now() - maxAgeMs]);
 }

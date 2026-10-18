@@ -36,10 +36,8 @@ export function stopScheduler() {
   timer = null;
 }
 
-let pruneCounter = 0;
-
 export async function tick() {
-  const users = listActiveUsers();
+  const users = await listActiveUsers();
 
   for (const user of users) {
     try {
@@ -47,15 +45,16 @@ export async function tick() {
     } catch (err) {
       if (err instanceof ReauthRequired) {
         console.warn(`[scheduler] ${user.email} needs to reconnect Google`);
-        markNeedsReauth(user.id);
+        await markNeedsReauth(user.id);
       } else {
         console.error(`[scheduler] ${user.email}:`, err.message);
       }
     }
   }
 
-  // Keep the dedupe ledger from growing forever.
-  if (++pruneCounter % 60 === 0) pruneNotified();
+  // Keep the dedupe ledger from growing forever. Cheap indexed delete, and
+  // an in-process counter would not survive a serverless invocation anyway.
+  await pruneNotified();
 }
 
 async function checkUser(user) {
@@ -72,7 +71,7 @@ async function checkUser(user) {
 
     // Atomic claim — the insert only succeeds the first time, so overlapping
     // ticks or a restart mid-window can never produce a duplicate.
-    if (!claimNotification(user.id, event.id)) continue;
+    if (!(await claimNotification(user.id, event.id))) continue;
 
     const result = await sendToUser(user.id, buildPayload(event, minutesUntil));
     console.log(

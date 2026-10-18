@@ -41,7 +41,7 @@ export function publicKey() {
 export async function sendToUser(userId, payload) {
   if (!configured) return { sent: 0, removed: 0 };
 
-  const subs = listSubscriptions(userId);
+  const subs = await listSubscriptions(userId);
   const body = JSON.stringify(payload);
   let sent = 0;
   let removed = 0;
@@ -60,7 +60,7 @@ export async function sendToUser(userId, payload) {
         sent += 1;
       } catch (err) {
         if (err.statusCode === 404 || err.statusCode === 410) {
-          deleteSubscription(sub.endpoint);
+          await deleteSubscription(sub.endpoint);
           removed += 1;
         } else {
           console.error(`[push] send failed (${err.statusCode}):`, err.body || err.message);

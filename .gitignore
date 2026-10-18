@@ -1,4 +1,5 @@
 node_modules/
+# legacy SQLite dev database — holds live Google refresh tokens
 data/
 .env
 .DS_Store
