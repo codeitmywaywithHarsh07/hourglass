@@ -13,18 +13,50 @@ import pg from "pg";
 
 const { Pool } = pg;
 
-const CONNECTION =
-  process.env.DATABASE_URL ||
-  process.env.POSTGRES_URL ||
-  process.env.POSTGRES_PRISMA_URL;
+const isLoopback = (url) => /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
 
-if (!CONNECTION) {
-  throw new Error(
-    "No database connection string. Set DATABASE_URL (or POSTGRES_URL).",
-  );
+/**
+ * Candidates in preference order. DATABASE_URL wins so you can point a
+ * deployment at any Postgres, but copying a whole local .env into a hosting
+ * provider is a very easy mistake — and a loopback address can never be right
+ * once deployed, so it is skipped there in favour of the platform's own
+ * variable rather than failing with a bare ECONNREFUSED.
+ */
+function pickConnection() {
+  const deployed = !!process.env.VERCEL;
+  const candidates = [
+    ["DATABASE_URL", process.env.DATABASE_URL],
+    ["POSTGRES_URL", process.env.POSTGRES_URL],
+    ["POSTGRES_PRISMA_URL", process.env.POSTGRES_PRISMA_URL],
+  ].filter(([, v]) => v);
+
+  if (!candidates.length) {
+    throw new Error(
+      "No database connection string. Set DATABASE_URL (or attach a Postgres store so POSTGRES_URL is injected).",
+    );
+  }
+
+  const usable = deployed ? candidates.filter(([, v]) => !isLoopback(v)) : candidates;
+
+  if (!usable.length) {
+    const names = candidates.map(([n]) => n).join(", ");
+    const verb = candidates.length === 1 ? "points" : "point";
+    throw new Error(
+      `${names} ${verb} at localhost, which cannot work on a deployed server. ` +
+        "Remove the local value and attach a Postgres database, or set " +
+        "DATABASE_URL to its connection string.",
+    );
+  }
+
+  const [name, url] = usable[0];
+  if (deployed && usable.length < candidates.length) {
+    console.warn(`[db] ignoring a localhost connection string; using ${name}`);
+  }
+  return url;
 }
 
-const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(CONNECTION);
+const CONNECTION = pickConnection();
+const isLocal = isLoopback(CONNECTION);
 
 // One connection per warm function instance. Hosted Postgres sits behind a
 // pooler, so a wide pool per instance would exhaust it as instances multiply.
