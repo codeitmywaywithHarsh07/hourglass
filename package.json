@@ -1,0 +1,19 @@
+{
+  "name": "meeting-pwa",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Installable PWA that pushes a notification before every Google Calendar meeting — even when the app is closed.",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file=.env server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file=.env --watch server/index.js",
+    "keys": "node scripts/generate-vapid-keys.js",
+    "icons": "node scripts/generate-icons.js"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}

@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Hourglass — meeting alerts that reach you</title>
+    <meta name="description" content="Get a push notification before every Google Calendar meeting, even when the app is closed." />
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0b0f0e" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f4f2ec" media="(prefers-color-scheme: light)" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Hourglass" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter+Tight:wght@400;500;600&display=swap"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+
+    <!-- Splash styles are inlined on purpose: styles.css is a network fetch,
+         and a splash styled from it would flash unstyled on a cold load. -->
+    <style>
+      .splash {
+        --lime: #c8f536;
+        --mint: #7af0be;
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: grid;
+        place-items: center;
+        /* Ink in both colour schemes, matching the manifest's background_color
+           so the OS splash hands off with no colour jump. */
+        background: #0b0f0e;
+        transition: opacity 0.4s ease, transform 0.4s ease;
+      }
+      .splash.is-done {
+        opacity: 0;
+        transform: scale(1.06);
+        pointer-events: none;
+      }
+
+      .splash__stage {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 24px;
+      }
+
+      .splash__mark { width: 108px; height: 108px; overflow: visible; }
+
+      /* Every element's resting style IS its final frame, and each animation
+         runs `backwards` from a hidden state. That makes the reduced-motion and
+         in-browser quick paths a single `animation: none`. */
+
+      .splash__seed {
+        fill: var(--lime);
+        opacity: 0;
+        transform-origin: 60px 60px;
+        animation: splash-seed 0.52s ease backwards;
+      }
+      @keyframes splash-seed {
+        0%   { opacity: 0; transform: scale(0); }
+        28%  { opacity: 1; transform: scale(1); }
+        100% { opacity: 0; transform: scale(0.35); }
+      }
+
+      .splash__ring {
+        fill: none;
+        stroke: url(#splashGrad);
+        stroke-width: 7;
+        stroke-linecap: round;
+        stroke-dasharray: 214;
+        stroke-dashoffset: 0;
+        transform: rotate(-90deg);
+        transform-origin: 60px 60px;
+        animation: splash-ring 0.58s cubic-bezier(0.4, 0, 0.2, 1) 0.1s backwards;
+      }
+      @keyframes splash-ring { from { stroke-dashoffset: 214; } }
+
+      .splash__hand {
+        stroke: var(--lime);
+        stroke-width: 6;
+        stroke-linecap: round;
+        transform-origin: 60px 60px;
+      }
+      .splash__hand--hour {
+        transform: rotate(-56deg);
+        animation: splash-hour 0.66s cubic-bezier(0.22, 0.88, 0.24, 1) 0.33s backwards;
+      }
+      .splash__hand--min {
+        transform: rotate(41deg);
+        animation: splash-min 0.66s cubic-bezier(0.22, 0.88, 0.24, 1) 0.36s backwards;
+      }
+      /* A full extra turn before settling, so time visibly spins. The opacity
+         stop matters: -416deg renders identically to the resting -56deg, so
+         without it the `backwards` fill would show both hands at rest from
+         frame one. */
+      @keyframes splash-hour {
+        0%  { transform: rotate(-416deg); opacity: 0; }
+        12% { opacity: 1; }
+      }
+      @keyframes splash-min {
+        0%  { transform: rotate(-319deg); opacity: 0; }
+        12% { opacity: 1; }
+      }
+
+      .splash__dot {
+        fill: var(--lime);
+        transform-origin: 86px 34px;
+        animation: splash-pop 0.42s cubic-bezier(0.2, 1.5, 0.4, 1) 0.62s backwards;
+      }
+      @keyframes splash-pop { from { transform: scale(0); } }
+
+      .splash__pulse {
+        fill: none;
+        stroke: var(--lime);
+        stroke-width: 3;
+        opacity: 0;
+        transform-origin: 86px 34px;
+        animation: splash-pulse 0.85s ease-out 0.72s backwards;
+      }
+      @keyframes splash-pulse {
+        0%   { transform: scale(1);   opacity: 0; }
+        12%  { opacity: 0.85; }
+        100% { transform: scale(2.8); opacity: 0; }
+      }
+
+      .splash__grains {
+        position: absolute;
+        top: 74px;
+        left: 50%;
+        width: 0;
+        height: 0;
+      }
+      .splash__grain {
+        position: absolute;
+        width: var(--r);
+        height: var(--r);
+        margin-left: calc(var(--r) / -2);
+        border-radius: 50%;
+        background: var(--lime);
+        opacity: 0;
+        animation: splash-grain 0.74s cubic-bezier(0.3, 0.7, 0.4, 1) var(--d) backwards;
+      }
+      @keyframes splash-grain {
+        0%   { transform: translate(0, -24px) scale(0.5); opacity: 0; }
+        25%  { opacity: 1; }
+        72%  { transform: translate(var(--x), 46px) scale(1); opacity: 1; }
+        100% { transform: translate(var(--x), 46px) scale(0); opacity: 0; }
+      }
+
+      .splash__word {
+        display: flex;
+        overflow: hidden;
+        padding-bottom: 0.14em;
+      }
+      .splash__word span {
+        display: block;
+        font-family: "Bricolage Grotesque", system-ui, sans-serif;
+        font-weight: 800;
+        font-size: 34px;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        color: #eef2ee;
+        animation: splash-letter 0.4s cubic-bezier(0.2, 0.9, 0.3, 1)
+          calc(0.95s + var(--i) * 0.03s) backwards;
+        /* Held until the webfont resolves, so the letters don't swap metrics
+           mid-reveal. Released by the inline script below. */
+        animation-play-state: paused;
+      }
+      @keyframes splash-letter { from { transform: translateY(110%); opacity: 0; } }
+
+      .splash__rule {
+        width: 132px;
+        height: 2px;
+        border-radius: 2px;
+        background: linear-gradient(90deg, var(--lime), var(--mint));
+        transform-origin: left;
+        animation: splash-rule 0.36s cubic-bezier(0.2, 0.9, 0.3, 1) 1.28s backwards;
+        animation-play-state: paused;
+      }
+      @keyframes splash-rule { from { transform: scaleX(0); } }
+
+      .splash.fonts-ready .splash__word span,
+      .splash.fonts-ready .splash__rule { animation-play-state: running; }
+
+      /* Browser reloads and reduced motion: final frame, no choreography. */
+      .splash--quick *, .splash--quick .splash__word span { animation: none !important; }
+      @media (prefers-reduced-motion: reduce) {
+        .splash *, .splash { animation: none !important; transition-duration: 0.01ms !important; }
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- ------------------------------------------------------- splash -- -->
+    <div class="splash" id="splash" aria-label="Loading Hourglass">
+      <div class="splash__stage">
+        <svg class="splash__mark" viewBox="0 0 120 120" aria-hidden="true">
+          <defs>
+            <linearGradient id="splashGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#c8f536" />
+              <stop offset="1" stop-color="#7af0be" />
+            </linearGradient>
+          </defs>
+          <circle class="splash__seed" cx="60" cy="60" r="4" />
+          <circle class="splash__ring" cx="60" cy="60" r="34" />
+          <line class="splash__hand splash__hand--hour" x1="60" y1="60" x2="60" y2="42" />
+          <line class="splash__hand splash__hand--min" x1="60" y1="60" x2="60" y2="39" />
+          <circle class="splash__pulse" cx="86" cy="34" r="10" />
+          <circle class="splash__dot" cx="86" cy="34" r="10" />
+        </svg>
+
+        <div class="splash__grains" aria-hidden="true">
+          <i class="splash__grain" style="--x:-74px;--d:.76s;--r:4px"></i>
+          <i class="splash__grain" style="--x:-61px;--d:.90s;--r:3px"></i>
+          <i class="splash__grain" style="--x:-49px;--d:.80s;--r:5px"></i>
+          <i class="splash__grain" style="--x:-38px;--d:.95s;--r:3px"></i>
+          <i class="splash__grain" style="--x:-27px;--d:.78s;--r:6px"></i>
+          <i class="splash__grain" style="--x:-15px;--d:.88s;--r:4px"></i>
+          <i class="splash__grain" style="--x:-5px;--d:.75s;--r:3px"></i>
+          <i class="splash__grain" style="--x:6px;--d:.92s;--r:5px"></i>
+          <i class="splash__grain" style="--x:17px;--d:.79s;--r:3px"></i>
+          <i class="splash__grain" style="--x:29px;--d:.86s;--r:4px"></i>
+          <i class="splash__grain" style="--x:41px;--d:.77s;--r:6px"></i>
+          <i class="splash__grain" style="--x:53px;--d:.97s;--r:3px"></i>
+          <i class="splash__grain" style="--x:66px;--d:.82s;--r:4px"></i>
+          <i class="splash__grain" style="--x:78px;--d:.93s;--r:3px"></i>
+        </div>
+
+        <div class="splash__word" aria-hidden="true">
+          <span style="--i:0">H</span><span style="--i:1">o</span><span style="--i:2">u</span><span
+            style="--i:3">r</span><span style="--i:4">g</span><span style="--i:5">l</span><span
+            style="--i:6">a</span><span style="--i:7">s</span><span style="--i:8">s</span>
+        </div>
+
+        <div class="splash__rule" aria-hidden="true"></div>
+      </div>
+    </div>
+
+    <!-- Classic inline script, not a module: it runs during parse, so the
+         failsafe exists even if app.js never loads. A broken bundle must never
+         leave someone stuck behind a full-screen overlay. -->
+    <script>
+      (function () {
+        var el = document.getElementById("splash");
+        var params = new URLSearchParams(location.search);
+        var override = params.get("splash");
+
+        function remove() {
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+          el = null;
+        }
+
+        if (override === "off") {
+          remove();
+          window.__splash = { ready: Promise.resolve(), dismiss: function () {} };
+          return;
+        }
+
+        var standalone =
+          matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+        var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        var full = override === "full" || (standalone && !reduced);
+
+        if (!full) el.classList.add("splash--quick");
+
+        // The wordmark waits on the webfont, capped so a slow CDN can't stall it.
+        Promise.race([
+          document.fonts ? document.fonts.ready : Promise.resolve(),
+          new Promise(function (r) { setTimeout(r, 600); }),
+        ]).then(function () {
+          if (el) el.classList.add("fonts-ready");
+        });
+
+        var settled;
+        var ready = new Promise(function (resolve) { settled = resolve; });
+        setTimeout(settled, full ? 1600 : 220);
+
+        var done = false;
+        function dismiss() {
+          if (done || !el) return;
+          done = true;
+          settled();
+          el.classList.add("is-done");
+          setTimeout(remove, 450);
+        }
+
+        // Impatient taps skip ahead; the 4s timer guarantees nobody is trapped
+        // if boot hangs or throws before app.js gets to dismiss it.
+        el.addEventListener("click", dismiss);
+        addEventListener("keydown", function (e) { if (e.key === "Escape") dismiss(); });
+        setTimeout(dismiss, 4000);
+
+        window.__splash = { ready: ready, dismiss: dismiss };
+      })();
+    </script>
+
+    <div class="grain" aria-hidden="true"></div>
+
+    <!-- ----------------------------------------------------- signed out -- -->
+    <main id="screen-connect" class="screen" hidden>
+      <div class="connect">
+        <div class="connect__mark" aria-hidden="true">
+          <img src="/icons/icon-192.png" alt="" width="72" height="72" />
+        </div>
+        <h1 class="connect__title">Never walk in<br /><em>late</em> again.</h1>
+        <p class="connect__sub">
+          Hourglass watches your Google Calendar and nudges your phone minutes
+          before a meeting starts — even when this app is closed.
+        </p>
+
+        <a class="btn btn--primary btn--lg" href="/auth/google">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path fill="currentColor" d="M21.35 11.1H12v2.98h5.35c-.23 1.4-1.63 4.1-5.35 4.1-3.22 0-5.85-2.67-5.85-5.95S8.78 6.28 12 6.28c1.83 0 3.06.78 3.76 1.45l2.56-2.47C16.7 3.74 14.55 2.85 12 2.85 6.98 2.85 2.9 6.93 2.9 11.95S6.98 21.05 12 21.05c5.3 0 8.8-3.72 8.8-8.96 0-.6-.07-1.06-.15-1.5z" />
+          </svg>
+          Connect Google Calendar
+        </a>
+
+        <ul class="connect__points">
+          <li><span aria-hidden="true">01</span> Read-only access to your calendar</li>
+          <li><span aria-hidden="true">02</span> Alerts arrive with the app closed</li>
+          <li><span aria-hidden="true">03</span> One tap straight into the call</li>
+        </ul>
+
+        <p class="connect__error" id="connect-error" hidden></p>
+      </div>
+    </main>
+
+    <!-- ---------------------------------------------------------- app -- -->
+    <div id="screen-app" class="screen" hidden>
+      <header class="topbar">
+        <div class="topbar__brand">
+          <span class="dot" id="live-dot" aria-hidden="true"></span>
+          <span class="wordmark">Hourglass</span>
+        </div>
+        <div class="topbar__actions">
+          <button class="icon-btn" id="btn-install" hidden title="Install app" aria-label="Install app">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-voice" title="Announce next meetings" aria-label="Announce next meetings">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 9v6h3l5 4V5L7 9H4Zm12.5-1.5a6 6 0 0 1 0 9M19 5a9.5 9.5 0 0 1 0 14"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-refresh" title="Refresh" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M20 11a8 8 0 1 0-.6 4M20 4v6h-6"/></svg>
+          </button>
+          <button class="icon-btn icon-btn--avatar" id="btn-settings" title="Settings" aria-label="Settings">
+            <img id="avatar" alt="" width="28" height="28" hidden />
+            <svg id="avatar-fallback" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="m19.4 14-.4.9 1.3 2.2-2.2 2.2-2.2-1.3-.9.4-.6 2.4h-3l-.6-2.4-.9-.4-2.2 1.3-2.2-2.2L4.6 15l-.4-.9L1.8 13.5v-3l2.4-.6.4-.9-1.3-2.2 2.2-2.2L7.7 5.9l.9-.4.6-2.4h3l.6 2.4.9.4 2.2-1.3 2.2 2.2-1.3 2.2.4.9 2.4.6v3l-2.2.5Z" opacity=".55"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- banner: permission / reauth / push state -->
+      <div class="banner" id="banner" hidden>
+        <p class="banner__text" id="banner-text"></p>
+        <button class="btn btn--ghost btn--sm" id="banner-action"></button>
+      </div>
+
+      <!-- next up -->
+      <section class="hero" id="hero" hidden>
+        <p class="hero__label" id="hero-label">Next up</p>
+        <h2 class="hero__title" id="hero-title"></h2>
+        <p class="hero__countdown" id="hero-countdown"></p>
+        <p class="hero__meta" id="hero-meta"></p>
+        <div class="hero__actions">
+          <a class="btn btn--primary" id="hero-join" hidden target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M15 10.5 21 7v10l-6-3.5M3 7.5A1.5 1.5 0 0 1 4.5 6h9A1.5 1.5 0 0 1 15 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 3 16.5v-9Z"/></svg>
+            Join
+          </a>
+          <button class="btn btn--ghost" id="hero-speak">Announce</button>
+        </div>
+      </section>
+
+      <!-- timeline -->
+      <main class="timeline" id="timeline"></main>
+
+      <p class="empty" id="empty" hidden>
+        <strong>Nothing on the books.</strong>
+        <span>No meetings with a start time today or tomorrow.</span>
+      </p>
+
+      <p class="loading" id="loading">Reading your calendar…</p>
+
+      <footer class="footer">
+        <span id="footer-status">—</span>
+      </footer>
+    </div>
+
+    <!-- --------------------------------------------------- settings sheet -- -->
+    <div class="scrim" id="scrim" hidden></div>
+    <aside class="sheet" id="sheet" hidden aria-label="Settings">
+      <div class="sheet__handle" aria-hidden="true"></div>
+      <header class="sheet__head">
+        <h3>Settings</h3>
+        <button class="icon-btn" id="sheet-close" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+
+      <div class="sheet__account">
+        <img id="sheet-avatar" alt="" width="40" height="40" hidden />
+        <div>
+          <p id="sheet-name">—</p>
+          <p id="sheet-email" class="muted">—</p>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <p class="row__title">Push notifications</p>
+          <p class="row__sub" id="devices-sub">Delivered even when the app is closed.</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-push" />
+          <span aria-hidden="true"></span>
+        </label>
+      </div>
+
+      <div class="row row--stack">
+        <div>
+          <p class="row__title">Alert me</p>
+          <p class="row__sub"><span id="lead-value">5</span> minutes before a meeting starts</p>
+        </div>
+        <input type="range" id="lead-range" min="1" max="30" step="1" value="5" />
+      </div>
+
+      <div class="row">
+        <div>
+          <p class="row__title">Voice announcements</p>
+          <p class="row__sub">Spoken aloud — only while the app is open.</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="toggle-voice" />
+          <span aria-hidden="true"></span>
+        </label>
+      </div>
+
+      <div class="sheet__buttons">
+        <button class="btn btn--ghost" id="btn-test">Send a test notification</button>
+        <button class="btn btn--danger" id="btn-disconnect">Disconnect Google</button>
+      </div>
+
+      <p class="sheet__note">
+        Hourglass reads your primary calendar, read-only. Disconnecting deletes
+        your tokens and every registered device from this server.
+      </p>
+    </aside>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
