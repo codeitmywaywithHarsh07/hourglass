@@ -4,3 +4,7 @@ data/
 .env
 .DS_Store
 *.log
+
+# local marketing assets, not part of the app
+screenshots/
+press/

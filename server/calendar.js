@@ -99,6 +99,7 @@ async function calendarRequest(user, path, { retried = false } = {}) {
 
 /** Trim a Google event down to what the UI and the push payload need. */
 export function normalizeEvent(event) {
+  const responseStatus = selfResponse(event);
   return {
     id: event.id,
     title: event.summary || "(no title)",
@@ -110,7 +111,24 @@ export function normalizeEvent(event) {
     joinUrl: getMeetingLink(event),
     attendees: Array.isArray(event.attendees) ? event.attendees.length : 0,
     htmlLink: event.htmlLink || null,
+    responseStatus,
+    declined: responseStatus === "declined",
   };
+}
+
+/**
+ * The user's own RSVP, read from the attendee entry Google marks as `self`.
+ *
+ * Returns null when there is nothing to go on: a solo event with no attendee
+ * list, an invitation that reached the user through a group alias so no entry
+ * is theirs, or a large event whose attendee list Google truncated. In every
+ * one of those cases the honest answer is "unknown", and callers treat unknown
+ * as not-declined — a missed meeting is worse than one extra notification.
+ */
+export function selfResponse(event) {
+  if (!Array.isArray(event.attendees)) return null;
+  const me = event.attendees.find((a) => a.self);
+  return me?.responseStatus ?? null;
 }
 
 function organizerName(event) {

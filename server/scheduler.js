@@ -69,6 +69,12 @@ async function checkUser(user) {
     // already began are skipped: a late alert is noise, not a reminder.
     if (minutesUntil > lead || minutesUntil < 0) continue;
 
+    // A meeting you declined is not your meeting. This is checked before the
+    // claim below, deliberately: nothing is written to the ledger, so if the
+    // user changes their RSVP to yes while the event is still inside the lead
+    // window, the next tick notifies normally.
+    if (event.declined) continue;
+
     // Atomic claim — the insert only succeeds the first time, so overlapping
     // ticks or a restart mid-window can never produce a duplicate.
     if (!(await claimNotification(user.id, event.id))) continue;
