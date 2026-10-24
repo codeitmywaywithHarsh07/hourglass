@@ -500,6 +500,16 @@ body {
 .item--now .item__card { border-color: color-mix(in srgb, var(--coral) 45%, transparent); }
 .item--now .chip { background: color-mix(in srgb, var(--coral) 18%, transparent); color: var(--coral); }
 
+/* Declined: visibly still on your calendar, visibly not your problem. */
+.item--declined .item__card { opacity: 0.5; }
+.item--declined .item__name { text-decoration: line-through; text-decoration-thickness: 1px; }
+.item--declined .item__node { border-color: var(--line); background: var(--bg); }
+.item--declined .chip {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-faint);
+}
+
 .item--soon .item__node { border-color: var(--amber); background: var(--amber); }
 .item--soon .chip { background: color-mix(in srgb, var(--amber) 20%, transparent); color: color-mix(in srgb, var(--amber) 80%, var(--text)); }
 

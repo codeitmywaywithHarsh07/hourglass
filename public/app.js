@@ -113,7 +113,9 @@ function render() {
   const upcoming = state.events.filter((e) => minutesUntil(e, now) > -60);
 
   $("empty").hidden = upcoming.length > 0;
-  renderHero(upcoming[0], now);
+  // Declined meetings still appear in the timeline, marked as declined, but
+  // they are not what you are doing next — so they never take the hero.
+  renderHero(upcoming.find((e) => !e.declined), now);
   renderTimeline(upcoming, now);
 
   $("footer-status").textContent = state.events.length
@@ -180,7 +182,8 @@ function itemEl(event, mins) {
   const item = document.createElement("button");
   item.type = "button";
   item.className = "item";
-  if (mins <= 0) item.classList.add("item--now");
+  if (event.declined) item.classList.add("item--declined");
+  else if (mins <= 0) item.classList.add("item--now");
   else if (mins <= 15) item.classList.add("item--soon");
   if (state.open.has(event.id)) item.classList.add("is-open");
 
@@ -196,7 +199,13 @@ function itemEl(event, mins) {
 
   const title = document.createElement("p");
   title.className = "item__title";
-  title.append(event.title, chipEl(mins, event.start));
+  // The name lives in its own span so a declined event can be struck through
+  // without the strike propagating into the chip — an ancestor's
+  // text-decoration is drawn across descendants and cannot be cancelled there.
+  const name = document.createElement("span");
+  name.className = "item__name";
+  name.textContent = event.title;
+  title.append(name, chipEl(mins, event.start, event.declined));
 
   const meta = document.createElement("p");
   meta.className = "item__meta";
@@ -251,10 +260,12 @@ function itemEl(event, mins) {
   return item;
 }
 
-function chipEl(mins, start) {
+function chipEl(mins, start, declined) {
   const chip = document.createElement("span");
   chip.className = "chip";
-  if (mins <= 0) chip.textContent = "now";
+  // The time is already on the rail, so the chip carries the more useful fact.
+  if (declined) chip.textContent = "declined";
+  else if (mins <= 0) chip.textContent = "now";
   else if (mins <= 15) chip.textContent = `in ${mins}m`;
   else if (mins < 60) chip.textContent = `${mins}m`;
   else chip.textContent = timeOfDay(new Date(start));
@@ -418,6 +429,7 @@ function announceUpcoming() {
 
   const soon = state.events
     .filter((e) => {
+      if (e.declined) return false;
       const m = minutesUntil(e);
       return m > -60 && m < 120;
     })
@@ -475,7 +487,7 @@ function wireEvents() {
 
   $("btn-voice").addEventListener("click", announceUpcoming);
   $("hero-speak").addEventListener("click", () => {
-    const next = state.events.find((e) => minutesUntil(e) > -60);
+    const next = state.events.find((e) => !e.declined && minutesUntil(e) > -60);
     if (next) speak(scriptFor(next));
   });
 
