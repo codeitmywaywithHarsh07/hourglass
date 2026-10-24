@@ -11,6 +11,8 @@
   "scripts": {
     "start": "node --env-file=.env server/index.js",
     "dev": "node --env-file=.env --watch server/index.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "test:watch": "node --test --watch --test-concurrency=1 \"test/**/*.test.js\"",
     "migrate": "node --env-file=.env scripts/migrate.js",
     "tick": "node --env-file=.env scripts/tick.js",
     "keys": "node scripts/generate-vapid-keys.js",

@@ -237,12 +237,43 @@ exists even if `app.js` fails to load. Boot runs behind it.
 assets. Small sizes use a bolder cut of the mark (`BOLD` in that script),
 because the full-size stroke weights disappear below about 48px.
 
+## Tests
+
+```bash
+npm test
+```
+
+Runs on Node's built-in test runner — no framework, no dependencies. The
+calendar and RSVP tests are pure and always run. The database-backed tests
+(storage, and the real `tick()` driven against stubbed Google responses) skip
+unless you point them at a database:
+
+```bash
+createdb hourglass_test
+TEST_DATABASE_URL="postgresql://$USER@localhost:5432/hourglass_test" npm test
+```
+
+Two safeguards worth knowing about:
+
+- These tests `TRUNCATE` tables, so `TEST_DATABASE_URL` is **refused** unless
+  the database name contains `test`. Pointing it at your dev or production
+  database fails loudly instead of wiping it.
+- Files run serially (`--test-concurrency=1`). They share one database and each
+  truncates it, so the runner's default parallelism makes them clobber each
+  other.
+
+`test/scheduler.test.js` is the one worth reading: it runs the real scheduler
+with only the two outbound HTTP calls stubbed, and asserts on the `notified`
+ledger — including that a declined meeting is never claimed, and still notifies
+if the RSVP changes to yes while it is inside the lead window.
+
 ## Scripts
 
 | | |
 | --- | --- |
 | `npm start` | local server + in-process scheduler |
 | `npm run dev` | same, with `--watch` |
+| `npm test` | the test suite (`npm run test:watch` to re-run on change) |
 | `npm run migrate` | create/update the schema |
 | `npm run tick` | run one scheduler pass by hand |
 | `npm run keys` | generate a VAPID keypair |
